@@ -5,132 +5,142 @@ import (
 	"time"
 )
 
-type TimeTask interface {
+type Handler interface {
 	OnTime()
 }
 
-type task struct {
-	tt     TimeTask
+type Task struct {
 	expire int64
+	hidx   int
+	ontime Handler
 }
 
-type Timer struct {
-	m    sync.Mutex
-	heap []task
-	t    *time.Timer
-}
-
-func (t *Timer) siftup(i int) {
-	h := t.heap
+func heapsiftup(h []*Task, i int) {
 	v := h[i]
-
 	for i > 0 {
-		p := (i - 1) / 4
-
+		p := (i - 1) / 2
 		if h[p].expire <= v.expire {
 			break
 		}
-
 		h[i] = h[p]
+		h[i].hidx = i
 		i = p
 	}
-
 	h[i] = v
+	v.hidx = i
 }
 
-func (t *Timer) siftdown(i int) {
-	h := t.heap
+func heapsiftdown(h []*Task, i int) {
 	v := h[i]
-	n := (len(h) + 2) / 4
-
+	n := len(h) / 2
 	for i < n {
-		b := 4*i + 1
-		min := b
-
-		for j := b + 1; j < b+4 && j < len(h); j++ {
-			if h[j].expire < h[min].expire {
-				min = j
-			}
+		j := 2*i + 1
+		k := j + 1
+		if k < len(h) && h[k].expire < h[j].expire {
+			j = k
 		}
-
-		if h[min].expire >= v.expire {
+		if h[j].expire >= v.expire {
 			break
 		}
-
-		h[i] = h[min]
-		i = min
+		h[i] = h[j]
+		h[i].hidx = i
+		i = j
 	}
-
 	h[i] = v
+	v.hidx = i
 }
 
-func (t *Timer) resetTimer(expire int64) {
-	d := time.Duration(expire - time.Now().UnixNano())
-	if t.t != nil {
-		t.t.Reset(d)
-	} else {
-		t.t = time.NewTimer(d)
-		go t.timeloop(t.t)
+type Timer struct {
+	mu    sync.Mutex
+	heap  []*Task
+	timer *time.Timer
+}
+
+func (t *Timer) pop(idx int) *Task {
+	h := t.heap
+	task := h[idx]
+	n := len(h) - 1
+	h[idx] = h[n]
+	h[idx].hidx = idx
+	if n > 1 {
+		heapsiftdown(h[:n], idx)
 	}
+	t.heap = h[:n]
+	return task
 }
 
-func (t *Timer) removeExpired() {
+func (t *Timer) popExpired() {
 	for {
-		var fn TimeTask
-
-		t.m.Lock()
-		now := time.Now().UnixNano()
-		if len(t.heap) > 0 && t.heap[0].expire <= now {
-			// heap pop
-			fn = t.heap[0].tt
-			n := len(t.heap) - 1
-			t.heap[0] = t.heap[n]
-			t.heap = t.heap[:n]
-			if n > 1 {
-				t.siftdown(0)
+		var task *Task
+		t.mu.Lock()
+		if len(t.heap) > 0 {
+			if t.heap[0].expire <= time.Now().UnixNano() {
+				task = t.pop(0)
+				task.hidx = -1
 			}
 		}
-		t.m.Unlock()
-
-		if fn == nil {
+		t.mu.Unlock()
+		if task == nil {
 			break
 		}
-
-		fn.OnTime()
+		task.ontime.OnTime()
 	}
 }
 
-func (t *Timer) timeloop(tm *time.Timer) {
-	for range tm.C {
-		if t.t != tm {
-			break
-		}
-
-		t.removeExpired()
-
-		t.m.Lock()
+func (t *Timer) timeloop() {
+	for range t.timer.C {
+		t.popExpired()
+		t.mu.Lock()
 		if len(t.heap) > 0 {
 			t.resetTimer(t.heap[0].expire)
 		}
-		t.m.Unlock()
+		t.mu.Unlock()
 	}
-	tm.Stop()
 }
 
-func (t *Timer) Add(tt TimeTask, expire int64) {
-	t.m.Lock()
-	// heap push
-	t.heap = append(t.heap, task{tt, expire})
-	t.siftup(len(t.heap) - 1)
+func (t *Timer) resetTimer(expire int64) {
+	// TODO reset timer only if expire changed.
+	d := time.Duration(expire - time.Now().UnixNano())
+	if t.timer == nil {
+		t.timer = time.NewTimer(d)
+		go t.timeloop()
+	} else {
+		t.timer.Reset(d)
+	}
+}
+
+func (t *Timer) Remove(task *Task) {
+	t.mu.Lock()
+	if task.hidx >= 0 {
+		t.pop(task.hidx)
+		task.hidx = -1
+		if len(t.heap) > 0 {
+			t.resetTimer(t.heap[0].expire)
+		}
+	}
+	t.mu.Unlock()
+}
+
+func (t *Timer) Reset(task *Task, expire int64) {
+	// assert(t.idx < len(tm.h) && tm.h[t.idx] == t)
+	t.mu.Lock()
+	task.expire = expire
+	if task.hidx < 0 {
+		task.hidx = len(t.heap)
+		t.heap = append(t.heap, task)
+	} else {
+		heapsiftdown(t.heap, task.hidx)
+	}
+	heapsiftup(t.heap, task.hidx)
 	t.resetTimer(t.heap[0].expire)
-	t.m.Unlock()
+	t.mu.Unlock()
 }
 
-func (t *Timer) Stop() {
-	t.m.Lock()
-	tm := t.t
-	t.heap = nil
-	t.t = nil
-	tm.Reset(0)
-	t.m.Unlock()
+func (t *Timer) Add(h Handler, expire int64) *Task {
+	task := &Task{
+		ontime: h,
+		hidx:   -1,
+	}
+	t.Reset(task, expire)
+	return task
 }

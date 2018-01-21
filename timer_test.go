@@ -2,53 +2,70 @@ package timer
 
 import (
 	"log"
-	"sync"
 	"testing"
 	"time"
 )
 
-type testTimer struct {
-	name string
-	now  time.Time
-	wg   *sync.WaitGroup
+type testtask string
+
+func (t testtask) OnTime() {
+	log.Println("> task", string(t))
 }
 
-func (t *testTimer) OnTime() {
-	log.Println(t.name, time.Now().Sub(t.now))
-	t.wg.Done()
-}
-
-func TestTimer(t *testing.T) {
-	var (
-		tm Timer
-		wg sync.WaitGroup
-	)
-	wg.Add(4)
+func TestTimerAdd(t *testing.T) {
+	tm := Timer{}
+	log.Println("start")
 	now := time.Now()
-	log.Println(now)
-	tm.Add(&testTimer{"a", now, &wg}, now.Add(5*time.Second).UnixNano())
-	log.Println("add a 5s")
+	tm.Add(testtask("1s"), now.Add(time.Second).UnixNano())
+	tm.Add(testtask("3s"), now.Add(time.Second*3).UnixNano())
+	tm.Add(testtask("2s"), now.Add(time.Second*2).UnixNano())
+	time.Sleep(time.Second * 5)
+}
 
-	tm.Add(&testTimer{"b", now, &wg}, now.Add(3*time.Second).UnixNano())
-	log.Println("add b 3s")
+func TestTimerCancel(t *testing.T) {
+	tm := Timer{}
+	log.Println("start")
 
-	tm.Add(&testTimer{"c", now, &wg}, now.Add(5*time.Second).UnixNano()+1000000)
-	log.Println("add c 5.000001s")
+	now := time.Now()
+	tm.Add(testtask("1s"), now.Add(time.Second).UnixNano())
+	t3s := tm.Add(testtask("3s"), now.Add(time.Second*3).UnixNano())
+	tm.Add(testtask("2s"), now.Add(time.Second*2).UnixNano())
+	log.Println("wait 1s")
+	time.Sleep(time.Second)
+	tm.Remove(t3s)
+	log.Println("cancel 3s")
+	time.Sleep(time.Second * 5)
+}
 
-	tm.Add(&testTimer{"d", now, &wg}, now.Add(10*time.Second).UnixNano())
-	log.Println("add d 10s")
+type testtask2 struct {
+	name string
+	tm   *Timer
+	t    *Task
+}
 
-	time.AfterFunc(5*time.Second, func() {
-		log.Println("stop d", tm.heap)
-		wg.Done()
-		tm.Stop()
-	})
+func (t *testtask2) OnTime() {
+	log.Println("> task", t.name)
+	if t.name == "1s" && t.tm != nil {
+		log.Println("> reset 1s next 4s")
+		t.tm.Reset(t.t, time.Now().Add(4*time.Second).UnixNano())
+		t.tm = nil
+	}
+}
 
-	wg.Wait()
-	log.Println("try wait stoped task")
-	wg.Add(1)
+func TestTimerReset(t *testing.T) {
+	tm := &Timer{}
+	log.Println("start")
+	now := time.Now()
+	t1s := &testtask2{
+		name: "1s",
+		tm:   tm,
+	}
+	t1s.t = tm.Add(t1s, now.Add(time.Second).UnixNano())
+	tm.Add(testtask("3s"), now.Add(time.Second*3).UnixNano())
+	tm.Add(testtask("2s"), now.Add(time.Second*2).UnixNano())
+	time.Sleep(time.Second * 10)
+}
 
-	tm.Add(&testTimer{"expired", now, &wg}, time.Now().Add(6*time.Second).UnixNano())
-	wg.Wait()
-	log.Println("task heap", tm.heap)
+func init() {
+	log.SetFlags(log.Ltime | log.Lmicroseconds)
 }
