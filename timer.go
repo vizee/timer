@@ -17,9 +17,10 @@ type Task struct {
 
 func heapsiftup(h []*Task, i int) {
 	v := h[i]
+	ex := v.expire
 	for i > 0 {
 		p := (i - 1) / 2
-		if h[p].expire <= v.expire {
+		if h[p].expire <= ex {
 			break
 		}
 		h[i] = h[p]
@@ -32,19 +33,20 @@ func heapsiftup(h []*Task, i int) {
 
 func heapsiftdown(h []*Task, i int) {
 	v := h[i]
+	ex := v.expire
 	n := len(h) / 2
 	for i < n {
-		j := 2*i + 1
-		k := j + 1
-		if k < len(h) && h[k].expire < h[j].expire {
-			j = k
+		c := 2*i + 1
+		r := c + 1
+		if r < len(h) && h[r].expire < h[c].expire {
+			c = r
 		}
-		if h[j].expire >= v.expire {
+		if h[c].expire >= ex {
 			break
 		}
-		h[i] = h[j]
+		h[i] = h[c]
 		h[i].hidx = i
-		i = j
+		i = c
 	}
 	h[i] = v
 	v.hidx = i
@@ -56,16 +58,17 @@ type Timer struct {
 	timer *time.Timer
 }
 
-func (t *Timer) pop(idx int) *Task {
+func (t *Timer) remove(idx int) *Task {
 	h := t.heap
 	task := h[idx]
-	n := len(h) - 1
-	h[idx] = h[n]
+	last := len(h) - 1
+	h[idx] = h[last]
 	h[idx].hidx = idx
-	if n > 1 {
-		heapsiftdown(h[:n], idx)
+	if idx != last {
+		heapsiftdown(h[:last], idx)
+		heapsiftup(h[:last], idx)
 	}
-	t.heap = h[:n]
+	t.heap = h[:last]
 	return task
 }
 
@@ -75,7 +78,7 @@ func (t *Timer) popExpired() {
 		t.mu.Lock()
 		if len(t.heap) > 0 {
 			if t.heap[0].expire <= time.Now().UnixNano() {
-				task = t.pop(0)
+				task = t.remove(0)
 				task.hidx = -1
 			}
 		}
@@ -112,7 +115,7 @@ func (t *Timer) resetTimer(expire int64) {
 func (t *Timer) Remove(task *Task) {
 	t.mu.Lock()
 	if task.hidx >= 0 {
-		t.pop(task.hidx)
+		t.remove(task.hidx)
 		task.hidx = -1
 		if len(t.heap) > 0 {
 			t.resetTimer(t.heap[0].expire)
